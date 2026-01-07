@@ -4,6 +4,7 @@ Pi extension for delegating tasks to subagents with async support, output trunca
 
 ## Features (beyond base)
 
+- **Live Progress Display**: Real-time visibility during sync execution showing current tool, recent output, tokens, and duration
 - **Output Truncation**: Configurable byte/line limits via `maxOutput`
 - **Debug Artifacts**: Input/output/JSONL/metadata files per task
 - **Session Logs**: JSONL + optional HTML export; share link via GitHub Gist
@@ -75,6 +76,16 @@ Files per task:
 Session files are stored under a per-run session dir (temp by default). If `share=true` and `gh` is logged in,
 the tool exports HTML and creates a private gist, then reports a share URL. Set `sessionDir` to keep session
 logs outside `/tmp`.
+
+## Live progress (sync mode)
+
+During sync execution, the collapsed view shows:
+- Current step (for chains): `... chain 2/3 | 8 tools, 1.4k tok, 38s`
+- Current agent and tool: `scout: > read: packages/tui/src/...`
+- Recent output lines (last 2-3 lines)
+- Hint: `(ctrl+o to expand)`
+
+Press **Ctrl+O** to expand the full streaming view with complete output.
 
 ## Async observability
 

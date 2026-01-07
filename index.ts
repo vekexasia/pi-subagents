@@ -558,6 +558,7 @@ async function runSync(
 		tokens: 0,
 		durationMs: 0,
 	};
+	result.progress = progress;
 
 	const startTime = Date.now();
 	const jsonlLines: string[] = [];
@@ -587,6 +588,11 @@ async function runSync(
 					progress.toolCount++;
 					progress.currentTool = evt.toolName;
 					progress.currentToolArgs = extractToolArgsPreview((evt.args || {}) as Record<string, unknown>);
+					if (onUpdate)
+						onUpdate({
+							content: [{ type: "text", text: getFinalOutput(result.messages) || "(running...)" }],
+							details: { mode: "single", results: [result], progress: [progress] },
+						});
 				}
 
 				if (evt.type === "tool_execution_end") {
@@ -602,6 +608,11 @@ async function runSync(
 					}
 					progress.currentTool = undefined;
 					progress.currentToolArgs = undefined;
+					if (onUpdate)
+						onUpdate({
+							content: [{ type: "text", text: getFinalOutput(result.messages) || "(running...)" }],
+							details: { mode: "single", results: [result], progress: [progress] },
+						});
 				}
 
 				if (evt.type === "message_end" && evt.message) {
@@ -647,11 +658,25 @@ async function runSync(
 		};
 
 		let stderrBuf = "";
+		let lastUpdateTime = 0;
+		const UPDATE_THROTTLE_MS = 150;
+
 		proc.stdout.on("data", (d) => {
 			buf += d.toString();
 			const lines = buf.split("\n");
 			buf = lines.pop() || "";
 			lines.forEach(processLine);
+
+			// Throttled periodic update for smoother progress display
+			const now = Date.now();
+			if (onUpdate && now - lastUpdateTime > UPDATE_THROTTLE_MS) {
+				lastUpdateTime = now;
+				progress.durationMs = now - startTime;
+				onUpdate({
+					content: [{ type: "text", text: getFinalOutput(result.messages) || "(running...)" }],
+					details: { mode: "single", results: [result], progress: [progress] },
+				});
+			}
 		});
 		proc.stderr.on("data", (d) => {
 			stderrBuf += d.toString();
@@ -1301,12 +1326,19 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 
 			if (d.mode === "single" && d.results.length === 1) {
 				const r = d.results[0];
-				const icon = r.exitCode === 0 ? theme.fg("success", "ok") : theme.fg("error", "X");
+				const isRunning = r.progress?.status === "running";
+				const icon = isRunning
+					? theme.fg("warning", "...")
+					: r.exitCode === 0
+						? theme.fg("success", "ok")
+						: theme.fg("error", "X");
 				const output = r.truncation?.text || getFinalOutput(r.messages);
 
-				const progressInfo = r.progressSummary
-					? ` | ${r.progressSummary.toolCount} tools, ${formatTokens(r.progressSummary.tokens)} tokens, ${formatDuration(r.progressSummary.durationMs)}`
-					: "";
+				const progressInfo = isRunning && r.progress
+					? ` | ${r.progress.toolCount} tools, ${formatTokens(r.progress.tokens)} tok, ${formatDuration(r.progress.durationMs)}`
+					: r.progressSummary
+						? ` | ${r.progressSummary.toolCount} tools, ${formatTokens(r.progressSummary.tokens)} tokens, ${formatDuration(r.progressSummary.durationMs)}`
+						: "";
 
 				if (expanded) {
 					const c = new Container();
@@ -1343,30 +1375,51 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 					return c;
 				}
 
-				const items = getDisplayItems(r.messages).slice(-COLLAPSED_ITEMS);
 				const lines = [`${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${progressInfo}`];
-				for (const item of items) {
-					if (item.type === "tool") lines.push(theme.fg("muted", formatToolCall(item.name, item.args)));
-					else lines.push(item.text.slice(0, 80) + (item.text.length > 80 ? "..." : ""));
+
+				if (isRunning && r.progress) {
+					if (r.progress.currentTool) {
+						const toolLine = r.progress.currentToolArgs
+							? `${r.progress.currentTool}: ${r.progress.currentToolArgs.slice(0, 60)}${r.progress.currentToolArgs.length > 60 ? "..." : ""}`
+							: r.progress.currentTool;
+						lines.push(theme.fg("warning", `> ${toolLine}`));
+					}
+					for (const line of r.progress.recentOutput.slice(-3)) {
+						lines.push(theme.fg("dim", `  ${line.slice(0, 80)}${line.length > 80 ? "..." : ""}`));
+					}
+					lines.push(theme.fg("dim", "(ctrl+o to expand)"));
+				} else {
+					const items = getDisplayItems(r.messages).slice(-COLLAPSED_ITEMS);
+					for (const item of items) {
+						if (item.type === "tool") lines.push(theme.fg("muted", formatToolCall(item.name, item.args)));
+						else lines.push(item.text.slice(0, 80) + (item.text.length > 80 ? "..." : ""));
+					}
+					lines.push(theme.fg("dim", formatUsage(r.usage, r.model)));
 				}
-				lines.push(theme.fg("dim", formatUsage(r.usage, r.model)));
 				return new Text(lines.join("\n"), 0, 0);
 			}
 
-			const ok = d.results.filter((r) => r.exitCode === 0).length;
-			const icon = ok === d.results.length ? theme.fg("success", "ok") : theme.fg("error", "X");
+			const hasRunning = d.progress?.some((p) => p.status === "running") 
+				|| d.results.some((r) => r.progress?.status === "running");
+			const ok = d.results.filter((r) => r.progress?.status === "completed" || (r.exitCode === 0 && r.progress?.status !== "running")).length;
+			const icon = hasRunning
+				? theme.fg("warning", "...")
+				: ok === d.results.length
+					? theme.fg("success", "ok")
+					: theme.fg("error", "X");
 
 			const totalSummary =
 				d.progressSummary ||
 				d.results.reduce(
 					(acc, r) => {
-						if (r.progressSummary) {
-							acc.toolCount += r.progressSummary.toolCount;
-							acc.tokens += r.progressSummary.tokens;
+						const prog = r.progress || r.progressSummary;
+						if (prog) {
+							acc.toolCount += prog.toolCount;
+							acc.tokens += prog.tokens;
 							acc.durationMs =
 								d.mode === "chain"
-									? acc.durationMs + r.progressSummary.durationMs
-									: Math.max(acc.durationMs, r.progressSummary.durationMs);
+									? acc.durationMs + prog.durationMs
+									: Math.max(acc.durationMs, prog.durationMs);
 						}
 						return acc;
 					},
@@ -1375,37 +1428,60 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 
 			const summaryStr =
 				totalSummary.toolCount || totalSummary.tokens
-					? ` | ${totalSummary.toolCount} tools, ${formatTokens(totalSummary.tokens)} tokens, ${formatDuration(totalSummary.durationMs)}`
+					? ` | ${totalSummary.toolCount} tools, ${formatTokens(totalSummary.tokens)} tok, ${formatDuration(totalSummary.durationMs)}`
 					: "";
 
 			const modeLabel = d.mode === "parallel" ? "parallel (no live progress)" : d.mode;
+			const stepInfo = hasRunning ? ` ${ok + 1}/${d.results.length}` : ` ${ok}/${d.results.length}`;
 
 			if (expanded) {
 				const c = new Container();
 				c.addChild(
 					new Text(
-						`${icon} ${theme.fg("toolTitle", theme.bold(modeLabel))} ${ok}/${d.results.length}${summaryStr}`,
+						`${icon} ${theme.fg("toolTitle", theme.bold(modeLabel))}${stepInfo}${summaryStr}`,
 						0,
 						0,
 					),
 				);
-				for (const r of d.results) {
+				for (let i = 0; i < d.results.length; i++) {
+					const r = d.results[i];
 					c.addChild(new Spacer(1));
-					const rIcon = r.exitCode === 0 ? theme.fg("success", "ok") : theme.fg("error", "X");
-					const rProgress = r.progressSummary
-						? ` | ${r.progressSummary.toolCount} tools, ${formatDuration(r.progressSummary.durationMs)}`
+					// Check both r.progress and d.progress array for running status
+					const progressFromArray = d.progress?.find((p) => p.index === i);
+					const rProg = r.progress || progressFromArray || r.progressSummary;
+					const rRunning = rProg?.status === "running";
+					const rIcon = rRunning
+						? theme.fg("warning", "...")
+						: r.exitCode === 0
+							? theme.fg("success", "ok")
+							: theme.fg("error", "X");
+					const rProgress = rProg
+						? ` | ${rProg.toolCount} tools, ${formatDuration(rProg.durationMs)}`
 						: "";
 					c.addChild(new Text(`${rIcon} ${theme.bold(r.agent)}${rProgress}`, 0, 0));
-					const out = r.truncation?.text || getFinalOutput(r.messages);
-					if (out) c.addChild(new Markdown(out, 0, 0, mdTheme));
-					c.addChild(new Text(theme.fg("dim", formatUsage(r.usage, r.model)), 0, 0));
-					if (r.sessionFile) {
-						c.addChild(new Text(theme.fg("dim", `Session: ${shortenPath(r.sessionFile)}`), 0, 0));
-					}
-					if (r.shareUrl) {
-						c.addChild(new Text(theme.fg("dim", `Share: ${r.shareUrl}`), 0, 0));
-					} else if (r.shareError) {
-						c.addChild(new Text(theme.fg("warning", `Share error: ${r.shareError}`), 0, 0));
+
+					if (rRunning && rProg) {
+						if (rProg.currentTool) {
+							const toolLine = rProg.currentToolArgs
+								? `${rProg.currentTool}: ${rProg.currentToolArgs.slice(0, 50)}${rProg.currentToolArgs.length > 50 ? "..." : ""}`
+								: rProg.currentTool;
+							c.addChild(new Text(theme.fg("warning", `  > ${toolLine}`), 0, 0));
+						}
+						for (const line of rProg.recentOutput.slice(-2)) {
+							c.addChild(new Text(theme.fg("dim", `    ${line.slice(0, 70)}${line.length > 70 ? "..." : ""}`), 0, 0));
+						}
+					} else {
+						const out = r.truncation?.text || getFinalOutput(r.messages);
+						if (out) c.addChild(new Markdown(out, 0, 0, mdTheme));
+						c.addChild(new Text(theme.fg("dim", formatUsage(r.usage, r.model)), 0, 0));
+						if (r.sessionFile) {
+							c.addChild(new Text(theme.fg("dim", `Session: ${shortenPath(r.sessionFile)}`), 0, 0));
+						}
+						if (r.shareUrl) {
+							c.addChild(new Text(theme.fg("dim", `Share: ${r.shareUrl}`), 0, 0));
+						} else if (r.shareError) {
+							c.addChild(new Text(theme.fg("warning", `Share error: ${r.shareError}`), 0, 0));
+						}
 					}
 				}
 
@@ -1416,11 +1492,27 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				return c;
 			}
 
-			return new Text(
-				`${icon} ${theme.fg("toolTitle", theme.bold(modeLabel))} ${ok}/${d.results.length}${summaryStr}`,
-				0,
-				0,
-			);
+			const lines = [`${icon} ${theme.fg("toolTitle", theme.bold(modeLabel))}${stepInfo}${summaryStr}`];
+			// Find running progress from d.progress array (more reliable) or d.results
+			const runningProgress = d.progress?.find((p) => p.status === "running") 
+				|| d.results.find((r) => r.progress?.status === "running")?.progress;
+			if (runningProgress) {
+				lines.push(theme.fg("dim", `  ${runningProgress.agent}:`));
+				if (runningProgress.currentTool) {
+					const toolLine = runningProgress.currentToolArgs
+						? `${runningProgress.currentTool}: ${runningProgress.currentToolArgs.slice(0, 50)}${runningProgress.currentToolArgs.length > 50 ? "..." : ""}`
+						: runningProgress.currentTool;
+					lines.push(theme.fg("warning", `  > ${toolLine}`));
+				}
+				for (const line of runningProgress.recentOutput.slice(-2)) {
+					lines.push(theme.fg("dim", `    ${line.slice(0, 70)}${line.length > 70 ? "..." : ""}`));
+				}
+				lines.push(theme.fg("dim", "(ctrl+o to expand)"));
+			} else if (hasRunning) {
+				// Fallback: we know something is running but can't find details
+				lines.push(theme.fg("dim", "(ctrl+o to expand)"));
+			}
+			return new Text(lines.join("\n"), 0, 0);
 		},
 
 	};

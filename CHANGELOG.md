@@ -2,8 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+- Live progress display for sync subagents (single and chain modes)
+- Shows current tool, recent output lines, token count, and duration during execution
+- Ctrl+O hint during sync execution to expand full streaming view
+- Throttled updates (150ms) for smoother progress display
+- Updates on tool_execution_start/end events for more responsive feedback
+
 ### Fixed
 - Async widget elapsed time now freezes when job completes instead of continuing to count up
+- Progress data now correctly linked to results during execution (was showing "ok" instead of "...")
 
 ### Added
 - Extension API support (registerTool) with `subagent` tool name
