@@ -277,7 +277,7 @@ export function clearChainStatusWidget(ctx: ExtensionContext): void {
  * Render a subagent's messages using pi-mono's AssistantMessageComponent and ToolExecutionComponent.
  * Replicates main chat look: text+thinking via AssistantMessageComponent, tool calls via ToolExecutionComponent.
  */
-function renderMessagesAsChat(container: Container, messages: Message[], mdTheme: ReturnType<typeof getMarkdownTheme>): void {
+function renderMessagesAsChat(container: Container, messages: Message[], mdTheme: ReturnType<typeof getMarkdownTheme>, expanded: boolean): void {
 	// Build tool result lookup: toolCallId -> result message
 	const toolResults = new Map<string, Message>();
 	for (const msg of messages) {
@@ -306,6 +306,7 @@ function renderMessagesAsChat(container: Container, messages: Message[], mdTheme
 			if (part.type === "toolCall") {
 				const tc = part as { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> };
 				const comp = new ToolExecutionComponent(tc.name, tc.arguments, {}, undefined, noopTui);
+				comp.setExpanded(expanded);
 				comp.setArgsComplete();
 
 				// Feed in the tool result if available
@@ -325,7 +326,7 @@ function renderMessagesAsChat(container: Container, messages: Message[], mdTheme
 /**
  * Render stream mode: accumulated output from all chain steps
  */
-function renderStreamMode(d: Details, theme: Theme, mdTheme: ReturnType<typeof getMarkdownTheme>): Widget {
+function renderStreamMode(d: Details, theme: Theme, mdTheme: ReturnType<typeof getMarkdownTheme>, expanded: boolean): Widget {
 	const w = getTermWidth() - 4;
 	const c = new Container();
 
@@ -386,7 +387,7 @@ function renderStreamMode(d: Details, theme: Theme, mdTheme: ReturnType<typeof g
 			// Render messages using pi-mono components for main-chat look
 			const rProg = r.progress || r.progressSummary;
 			const rRunning = rProg?.status === "running";
-			renderMessagesAsChat(c, r.messages, mdTheme);
+			renderMessagesAsChat(c, r.messages, mdTheme, expanded);
 
 			// Running step: show currently-executing tool (not yet in messages)
 			if (rRunning && rProg && rProg.currentTool) {
@@ -483,7 +484,7 @@ export function renderSubagentResult(
 	}
 
 	// Stream mode: show accumulated step output instead of compact view
-	if (d.stream && d.mode === "chain") return renderStreamMode(d, theme, mdTheme);
+	if (d.stream && d.mode === "chain") return renderStreamMode(d, theme, mdTheme, _options.expanded);
 
 	const hasRunning = d.progress?.some((p) => p.status === "running")
 		|| d.results.some((r) => r.progress?.status === "running");
