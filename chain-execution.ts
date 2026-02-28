@@ -541,7 +541,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 									stream: stream || undefined,
 								},
 							});
-							if (stream) updateChainStatusWidget(ctx, chainAgents, combined, stepIndex, true);
+							if (stream) { streamResults = combined; updateChainStatusWidget(ctx, chainAgents, combined, stepIndex, true); }
 						}
 					: undefined,
 			});
